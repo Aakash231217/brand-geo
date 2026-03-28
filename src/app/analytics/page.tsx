@@ -74,7 +74,7 @@ export default function AnalyticsPage() {
       // Build platform metrics from platformScores
       const pScores = data.platformScores || {};
       const pMetrics: PlatformMetric[] = Object.entries(pScores).map(([name, val]: [string, unknown]) => {
-        const v = val as { score: number; mentions: number; sentiment: string };
+        const v = val as { score: number; mentions: number; sentiment: string; citations?: number };
         return {
           name: name.charAt(0).toUpperCase() + name.slice(1),
           score: v.score,

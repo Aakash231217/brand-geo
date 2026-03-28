@@ -4,10 +4,11 @@ import { cookies } from "next/headers";
 import { prisma } from "./db";
 import type { Role } from "@/generated/prisma/client";
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  throw new Error("JWT_SECRET environment variable is required");
-}
+const JWT_SECRET: string = (() => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error("JWT_SECRET environment variable is required");
+  return secret;
+})();
 const SESSION_COOKIE = "brandai_session";
 const SESSION_EXPIRY_DAYS = 7;
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -414,7 +414,8 @@ export default function Dashboard() {
                   const total = kr.platforms.length;
                   const mentionRate = total > 0 ? Math.round((mentions / total) * 100) : 0;
                   return (
-                    <tr key={kr.keyword} className="border-b border-zinc-100 dark:border-zinc-900">
+                    <React.Fragment key={kr.keyword}>
+                    <tr className="border-b border-zinc-100 dark:border-zinc-900">
                       <td className="py-3 font-medium text-zinc-900 dark:text-zinc-100">{kr.keyword}</td>
                       <td className="py-3 text-center">
                         <Badge variant={mentionRate >= 60 ? "success" : mentionRate >= 30 ? "warning" : "destructive"}>
@@ -451,6 +452,7 @@ export default function Dashboard() {
                         </td>
                       </tr>
                     )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { analyzeUrlForSEO } from "@/lib/openrouter";
+import { scrapeUrl } from "@/lib/bright-data";
 import { getOrCreateBrand, saveSEOAudit } from "@/lib/db";
 import { requireAuth } from "@/lib/auth";
 
@@ -15,19 +16,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "url and brandName are required" }, { status: 400 });
     }
 
-    // Validate URL format
     try {
       new URL(url);
     } catch {
       return NextResponse.json({ error: "Invalid URL format" }, { status: 400 });
     }
 
-    const analysis = await analyzeUrlForSEO(url, brandName);
+    // Step 1: Scrape the URL for real page data
+    const realPageData = await scrapeUrl(url);
 
-    // Try to parse as JSON
+    // Step 2: Pass real data to AI for grounded analysis
+    const analysis = await analyzeUrlForSEO(url, brandName, realPageData);
+
     try {
       const parsed = JSON.parse(analysis);
-      // Persist
+      // Include real page data in response so frontend can show it
+      parsed.realPageData = {
+        title: realPageData.title,
+        description: realPageData.description,
+        hasStructuredData: realPageData.structuredData,
+        hasFaqSchema: realPageData.faqSchema,
+        headings: realPageData.headings,
+        metaTags: realPageData.metaTags,
+      };
+
       try {
         const brand = await getOrCreateBrand({ name: brandName });
         await saveSEOAudit(brand.id, {

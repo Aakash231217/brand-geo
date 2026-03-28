@@ -1,5 +1,45 @@
-const BRIGHT_DATA_API_TOKEN = process.env.BRIGHT_DATA_API_TOKEN!;
-const BRIGHT_DATA_BASE = "https://api.brightdata.com";
+const BRIGHT_DATA_API_TOKEN: string = (() => {
+  const token = process.env.BRIGHT_DATA_API_TOKEN;
+  if (!token) throw new Error("BRIGHT_DATA_API_TOKEN environment variable is required");
+  return token;
+})();
+
+const SERP_DATASET_ID = "gd_mfz5x93lmsjjjylob";
+const SCRAPE_URL = `https://api.brightdata.com/datasets/v3/scrape?dataset_id=${SERP_DATASET_ID}&notify=false&include_errors=true`;
+
+// --- Types ---
+
+export interface SERPResult {
+  title: string;
+  url: string;
+  description: string;
+  rank: number;
+  global_rank?: number;
+}
+
+export interface SERPResponse {
+  url: string;
+  keyword: string;
+  search_results?: SERPResult[];
+  organic?: SERPResult[];
+  knowledge_graph?: Record<string, unknown>;
+  related_queries?: string[] | { query?: string }[];
+  people_also_ask?: { question: string; answer?: string }[];
+  featured_snippet?: { title?: string; description?: string; url?: string };
+  input?: Record<string, string>;
+  ai_overview?: string;
+}
+
+export interface BrandSERPData {
+  keyword: string;
+  results: SERPResult[];
+  totalResults: number;
+  brandRank: number | null;
+  relatedQueries: string[];
+  peopleAlsoAsk: string[];
+  featuredSnippet: { title: string; description: string; url: string } | null;
+  aiOverview: string | null;
+}
 
 export interface ScrapedMention {
   url: string;
@@ -7,112 +47,276 @@ export interface ScrapedMention {
   snippet: string;
   platform: string;
   date: string;
+  rank: number;
 }
 
-export interface BrandSearchResult {
-  query: string;
-  results: ScrapedMention[];
-  totalResults: number;
-}
+// --- Core SERP API ---
 
-async function brightDataRequest(endpoint: string, body: unknown): Promise<unknown> {
-  const res = await fetch(`${BRIGHT_DATA_BASE}${endpoint}`, {
+async function serpScrape(input: Record<string, string>[]): Promise<SERPResponse[]> {
+  const res = await fetch(SCRAPE_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${BRIGHT_DATA_API_TOKEN}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(input),
   });
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Bright Data error (${res.status}): ${err}`);
+    throw new Error(`Bright Data SERP error (${res.status}): ${err}`);
   }
 
-  return res.json();
+  const data = await res.json();
+  return Array.isArray(data) ? data : [data];
 }
 
-export async function searchBrandMentions(
+function detectPlatform(url: string): string {
+  const u = url.toLowerCase();
+  if (u.includes("chat.openai.com") || u.includes("chatgpt")) return "ChatGPT";
+  if (u.includes("gemini.google") || u.includes("bard.google")) return "Google Gemini";
+  if (u.includes("perplexity.ai")) return "Perplexity";
+  if (u.includes("claude.ai") || u.includes("anthropic")) return "Claude";
+  if (u.includes("copilot.microsoft") || u.includes("bing.com/chat")) return "Microsoft Copilot";
+  if (u.includes("meta.ai")) return "Meta AI";
+  if (u.includes("reddit.com")) return "Reddit";
+  if (u.includes("twitter.com") || u.includes("x.com")) return "X/Twitter";
+  if (u.includes("youtube.com")) return "YouTube";
+  if (u.includes("linkedin.com")) return "LinkedIn";
+  if (u.includes("wikipedia.org")) return "Wikipedia";
+  if (u.includes("medium.com")) return "Medium";
+  if (u.includes("quora.com")) return "Quora";
+  return "Web";
+}
+
+function extractResults(resp: SERPResponse): SERPResult[] {
+  return resp.search_results || resp.organic || [];
+}
+
+function normalizeRelatedQueries(rq: unknown): string[] {
+  if (!Array.isArray(rq)) return [];
+  return rq
+    .map((q) => (typeof q === "string" ? q : (q as { query?: string })?.query || ""))
+    .filter(Boolean);
+}
+
+/**
+ * Search Google SERP for brand + keywords. Returns real ranking data.
+ */
+export async function searchBrandSERP(
   brandName: string,
   keywords: string[]
-): Promise<BrandSearchResult[]> {
-  const results: BrandSearchResult[] = [];
+): Promise<BrandSERPData[]> {
+  const results: BrandSERPData[] = [];
+  const trimmedKeywords = keywords.slice(0, 10);
 
-  for (const keyword of keywords.slice(0, 5)) {
-    const query = `${brandName} ${keyword}`;
+  const input = trimmedKeywords.map((keyword) => ({
+    url: "https://www.google.com/",
+    keyword: `${brandName} ${keyword}`,
+    language: "",
+    uule: "",
+    brd_mobile: "",
+    tbs: "",
+    tbm: "",
+    nfpr: "",
+    index: "",
+  }));
 
-    try {
-      const data = (await brightDataRequest("/datasets/v3/trigger", {
-        dataset_id: "gd_l1viktl72bvl7bjuj0",
-        data: [{ keyword: query, url: `https://www.google.com/search?q=${encodeURIComponent(query)}` }],
-        format: "json",
-        include_errors: false,
-      })) as { snapshot_id?: string };
+  try {
+    const serpResponses = await serpScrape(input);
+    const brandLower = brandName.toLowerCase();
 
-      if (data.snapshot_id) {
-        // Poll for results
-        const snapshotData = await pollSnapshot(data.snapshot_id);
-        const searchResults = Array.isArray(snapshotData) ? snapshotData : [];
+    for (let i = 0; i < serpResponses.length; i++) {
+      const resp = serpResponses[i];
+      const searchResults = extractResults(resp);
 
-        results.push({
-          query,
-          totalResults: searchResults.length,
-          results: searchResults.slice(0, 10).map((r: Record<string, string>) => ({
-            url: r.url || r.link || "",
-            title: r.title || "",
-            snippet: r.description || r.snippet || "",
-            platform: detectPlatform(r.url || r.link || ""),
-            date: r.date || new Date().toISOString(),
-          })),
-        });
+      let brandRank: number | null = null;
+      for (let j = 0; j < searchResults.length; j++) {
+        const r = searchResults[j];
+        if (
+          r.title?.toLowerCase().includes(brandLower) ||
+          r.url?.toLowerCase().includes(brandLower) ||
+          r.description?.toLowerCase().includes(brandLower)
+        ) {
+          brandRank = j + 1;
+          break;
+        }
       }
-    } catch (error) {
-      console.error(`Error searching for "${query}":`, error);
-      results.push({ query, totalResults: 0, results: [] });
+
+      const fs = resp.featured_snippet;
+
+      results.push({
+        keyword: trimmedKeywords[i] || "",
+        results: searchResults.slice(0, 20).map((r, idx) => ({
+          title: r.title || "",
+          url: r.url || "",
+          description: r.description || "",
+          rank: r.rank || idx + 1,
+          global_rank: r.global_rank,
+        })),
+        totalResults: searchResults.length,
+        brandRank,
+        relatedQueries: normalizeRelatedQueries(resp.related_queries),
+        peopleAlsoAsk: (resp.people_also_ask || []).map((p) => p.question).filter(Boolean),
+        featuredSnippet: fs
+          ? { title: fs.title || "", description: fs.description || "", url: fs.url || "" }
+          : null,
+        aiOverview: resp.ai_overview || null,
+      });
+    }
+  } catch (error) {
+    console.error("SERP search error:", error);
+    for (const keyword of trimmedKeywords) {
+      results.push({
+        keyword,
+        results: [],
+        totalResults: 0,
+        brandRank: null,
+        relatedQueries: [],
+        peopleAlsoAsk: [],
+        featuredSnippet: null,
+        aiOverview: null,
+      });
     }
   }
 
   return results;
 }
 
-async function pollSnapshot(snapshotId: string, maxAttempts = 10): Promise<unknown> {
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    const res = await fetch(
-      `${BRIGHT_DATA_BASE}/datasets/v3/snapshot/${snapshotId}?format=json`,
+/**
+ * Search Google for a brand to find real web mentions.
+ */
+export async function searchWebForBrand(
+  brandName: string,
+  query: string
+): Promise<ScrapedMention[]> {
+  try {
+    const responses = await serpScrape([
       {
-        headers: {
-          Authorization: `Bearer ${BRIGHT_DATA_API_TOKEN}`,
-        },
-      }
+        url: "https://www.google.com/",
+        keyword: `"${brandName}" ${query}`,
+        language: "",
+        uule: "",
+        brd_mobile: "",
+        tbs: "",
+        tbm: "",
+        nfpr: "",
+        index: "",
+      },
+    ]);
+
+    const resp = responses[0];
+    if (!resp) return [];
+
+    return extractResults(resp).slice(0, 15).map((r, idx) => ({
+      url: r.url || "",
+      title: r.title || "",
+      snippet: r.description || "",
+      platform: detectPlatform(r.url || ""),
+      date: new Date().toISOString(),
+      rank: r.rank || idx + 1,
+    }));
+  } catch (error) {
+    console.error("searchWebForBrand error:", error);
+    return [];
+  }
+}
+
+/**
+ * Search Google News for brand mentions.
+ */
+export async function searchBrandNews(
+  brandName: string,
+  keywords: string[]
+): Promise<ScrapedMention[]> {
+  try {
+    const responses = await serpScrape(
+      keywords.slice(0, 5).map((kw) => ({
+        url: "https://www.google.com/",
+        keyword: `${brandName} ${kw}`,
+        tbm: "nws",
+        language: "",
+        uule: "",
+        brd_mobile: "",
+        tbs: "",
+        nfpr: "",
+        index: "",
+      }))
     );
 
-    if (res.status === 200) {
-      return res.json();
-    }
-    // 202 means still processing
-    if (res.status !== 202) {
-      throw new Error(`Snapshot poll failed with status ${res.status}`);
-    }
+    return responses.flatMap((resp) =>
+      extractResults(resp).slice(0, 5).map((r, idx) => ({
+        url: r.url || "",
+        title: r.title || "",
+        snippet: r.description || "",
+        platform: detectPlatform(r.url || ""),
+        date: new Date().toISOString(),
+        rank: r.rank || idx + 1,
+      }))
+    );
+  } catch (error) {
+    console.error("searchBrandNews error:", error);
+    return [];
   }
-
-  return [];
 }
 
-function detectPlatform(url: string): string {
-  if (url.includes("chat.openai.com") || url.includes("chatgpt")) return "ChatGPT";
-  if (url.includes("gemini.google") || url.includes("bard.google")) return "Google Gemini";
-  if (url.includes("perplexity.ai")) return "Perplexity";
-  if (url.includes("claude.ai") || url.includes("anthropic")) return "Claude";
-  if (url.includes("copilot.microsoft") || url.includes("bing.com/chat")) return "Microsoft Copilot";
-  if (url.includes("meta.ai")) return "Meta AI";
-  if (url.includes("reddit.com")) return "Reddit";
-  if (url.includes("twitter.com") || url.includes("x.com")) return "X/Twitter";
-  return "Web";
+/**
+ * Get trending/related search queries for a topic.
+ */
+export async function getTrendingQueries(
+  brandName: string,
+  industry: string
+): Promise<{ relatedQueries: string[]; peopleAlsoAsk: string[] }> {
+  try {
+    const responses = await serpScrape([
+      {
+        url: "https://www.google.com/",
+        keyword: `best ${industry} ${brandName}`,
+        language: "",
+        uule: "",
+        brd_mobile: "",
+        tbs: "",
+        tbm: "",
+        nfpr: "",
+        index: "",
+      },
+      {
+        url: "https://www.google.com/",
+        keyword: `${brandName} vs`,
+        language: "",
+        uule: "",
+        brd_mobile: "",
+        tbs: "",
+        tbm: "",
+        nfpr: "",
+        index: "",
+      },
+    ]);
+
+    const relatedQueries: string[] = [];
+    const peopleAlsoAsk: string[] = [];
+
+    for (const resp of responses) {
+      for (const q of normalizeRelatedQueries(resp.related_queries)) {
+        if (!relatedQueries.includes(q)) relatedQueries.push(q);
+      }
+      for (const p of resp.people_also_ask || []) {
+        if (p.question && !peopleAlsoAsk.includes(p.question)) {
+          peopleAlsoAsk.push(p.question);
+        }
+      }
+    }
+
+    return { relatedQueries, peopleAlsoAsk };
+  } catch (error) {
+    console.error("getTrendingQueries error:", error);
+    return { relatedQueries: [], peopleAlsoAsk: [] };
+  }
 }
 
+/**
+ * Scrape a URL via SERP to get basic page info for SEO audit.
+ */
 export async function scrapeUrl(url: string): Promise<{
   title: string;
   description: string;
@@ -123,97 +327,116 @@ export async function scrapeUrl(url: string): Promise<{
   metaTags: Record<string, string>;
 }> {
   try {
-    const data = (await brightDataRequest("/datasets/v3/trigger", {
-      dataset_id: "gd_l1viktl72bvl7bjuj0",
-      data: [{ url }],
-      format: "json",
-      include_errors: false,
-    })) as { snapshot_id?: string };
+    const hostname = new URL(url).hostname;
+    const pathname = new URL(url).pathname;
+    const responses = await serpScrape([
+      {
+        url: "https://www.google.com/",
+        keyword: `site:${hostname} ${pathname !== "/" ? pathname : ""}`.trim(),
+        language: "",
+        uule: "",
+        brd_mobile: "",
+        tbs: "",
+        tbm: "",
+        nfpr: "",
+        index: "",
+      },
+    ]);
 
-    if (data.snapshot_id) {
-      const result = await pollSnapshot(data.snapshot_id);
-      const page = (Array.isArray(result) ? result[0] : result) as Record<string, unknown> | undefined;
+    const resp = responses[0];
+    const results = extractResults(resp);
+    const match = results.find((r) => r.url?.includes(pathname)) || results[0];
 
-      if (page) {
-        const html = (page.html as string) || (page.text as string) || "";
-
-        // Extract headings (h1-h6) from HTML
-        const headingMatches = html.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi) || [];
-        const headings = headingMatches.map((h) =>
-          h.replace(/<[^>]+>/g, "").trim()
-        ).filter(Boolean);
-
-        // Extract meta tags
-        const metaTags: Record<string, string> = {};
-        const metaMatches = html.matchAll(/<meta\s+(?:name|property)=["']([^"']+)["']\s+content=["']([^"']*?)["'][^>]*>/gi);
-        for (const m of metaMatches) {
-          metaTags[m[1]] = m[2];
-        }
-
-        // Detect structured data (JSON-LD)
-        const hasJsonLd = /<script\s+type=["']application\/ld\+json["']>/i.test(html);
-
-        // Detect FAQ schema
-        const hasFaq = /FAQPage/i.test(html);
-
-        return {
-          title: (page.title as string) || metaTags["og:title"] || "",
-          description: (page.description as string) || metaTags["description"] || metaTags["og:description"] || "",
-          headings,
-          content: (page.text as string) || "",
-          structuredData: hasJsonLd,
-          faqSchema: hasFaq,
-          metaTags,
-        };
-      }
-    }
+    return {
+      title: match?.title || "",
+      description: match?.description || "",
+      headings: [],
+      content: match?.description || "",
+      structuredData: false,
+      faqSchema: false,
+      metaTags: { description: match?.description || "" },
+    };
   } catch (error) {
     console.error(`Error scraping ${url}:`, error);
+    return {
+      title: "",
+      description: "",
+      headings: [],
+      content: "",
+      structuredData: false,
+      faqSchema: false,
+      metaTags: {},
+    };
   }
-
-  return {
-    title: "",
-    description: "",
-    headings: [],
-    content: "",
-    structuredData: false,
-    faqSchema: false,
-    metaTags: {},
-  };
 }
 
-export async function searchWebForBrand(
+/**
+ * Get real competitor SERP rankings for keywords.
+ */
+export async function getCompetitorRankings(
   brandName: string,
-  query: string
-): Promise<ScrapedMention[]> {
+  competitors: string[],
+  keywords: string[]
+): Promise<{
+  keyword: string;
+  rankings: { name: string; rank: number | null; url: string; snippet: string }[];
+}[]> {
+  const results: {
+    keyword: string;
+    rankings: { name: string; rank: number | null; url: string; snippet: string }[];
+  }[] = [];
+
+  const input = keywords.slice(0, 5).map((kw) => ({
+    url: "https://www.google.com/",
+    keyword: kw,
+    language: "",
+    uule: "",
+    brd_mobile: "",
+    tbs: "",
+    tbm: "",
+    nfpr: "",
+    index: "",
+  }));
+
   try {
-    const data = (await brightDataRequest("/datasets/v3/trigger", {
-      dataset_id: "gd_l1viktl72bvl7bjuj0",
-      data: [
-        {
-          keyword: `"${brandName}" ${query}`,
-          url: `https://www.google.com/search?q=${encodeURIComponent(`"${brandName}" ${query}`)}`,
-        },
-      ],
-      format: "json",
-      include_errors: false,
-    })) as { snapshot_id?: string };
+    const serpResponses = await serpScrape(input);
 
-    if (data.snapshot_id) {
-      const result = await pollSnapshot(data.snapshot_id);
-      const items = Array.isArray(result) ? result : [];
+    for (let i = 0; i < serpResponses.length; i++) {
+      const resp = serpResponses[i];
+      const searchResults = extractResults(resp);
+      const rankings: { name: string; rank: number | null; url: string; snippet: string }[] = [];
 
-      return items.slice(0, 10).map((r: Record<string, string>) => ({
-        url: r.url || r.link || "",
-        title: r.title || "",
-        snippet: r.description || r.snippet || "",
-        platform: detectPlatform(r.url || r.link || ""),
-        date: r.date || new Date().toISOString(),
-      }));
+      for (const name of [brandName, ...competitors]) {
+        const nameLower = name.toLowerCase();
+        let found = false;
+
+        for (let j = 0; j < searchResults.length; j++) {
+          const r = searchResults[j];
+          if (
+            r.title?.toLowerCase().includes(nameLower) ||
+            r.url?.toLowerCase().includes(nameLower)
+          ) {
+            rankings.push({
+              name,
+              rank: r.rank || j + 1,
+              url: r.url || "",
+              snippet: r.description || "",
+            });
+            found = true;
+            break;
+          }
+        }
+
+        if (!found) {
+          rankings.push({ name, rank: null, url: "", snippet: "" });
+        }
+      }
+
+      results.push({ keyword: keywords[i] || "", rankings });
     }
   } catch (error) {
-    console.error("searchWebForBrand error:", error);
+    console.error("getCompetitorRankings error:", error);
   }
 
-  return [];
+  return results;
 }

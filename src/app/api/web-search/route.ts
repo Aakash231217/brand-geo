@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { searchBrandMentions, searchWebForBrand } from "@/lib/bright-data";
+import { searchBrandSERP, searchWebForBrand } from "@/lib/bright-data";
 import { getOrCreateBrand, saveWebMentions } from "@/lib/db";
 import { requireAuth } from "@/lib/auth";
 
@@ -17,11 +17,10 @@ export async function POST(req: NextRequest) {
 
     if (query) {
       const results = await searchWebForBrand(brandName, query);
-      // Persist mentions
       try {
         const brand = await getOrCreateBrand({ name: brandName });
         if (results.length > 0) {
-          await saveWebMentions(brand.id, results.map((r: { url: string; title: string; snippet: string; platform: string; date: string }) => ({
+          await saveWebMentions(brand.id, results.map((r) => ({
             query,
             url: r.url,
             title: r.title ?? "",
@@ -37,25 +36,25 @@ export async function POST(req: NextRequest) {
     }
 
     if (keywords?.length) {
-      const results = await searchBrandMentions(brandName, keywords);
-      // Persist mentions
+      const serpData = await searchBrandSERP(brandName, keywords);
+      // Persist mentions from SERP results
       try {
         const brand = await getOrCreateBrand({ name: brandName });
-        const allMentions = results.flatMap((r: { query: string; results: { url: string; title: string; snippet: string; platform: string; date: string }[] }) =>
-          r.results.map((m: { url: string; title: string; snippet: string; platform: string; date: string }) => ({
-            query: r.query,
-            url: m.url,
-            title: m.title ?? "",
-            snippet: m.snippet ?? "",
-            platform: m.platform ?? "",
-            date: m.date ?? "",
+        const allMentions = serpData.flatMap((sr) =>
+          sr.results.map((r) => ({
+            query: sr.keyword,
+            url: r.url,
+            title: r.title ?? "",
+            snippet: r.description ?? "",
+            platform: "",
+            date: new Date().toISOString(),
           }))
         );
         if (allMentions.length > 0) await saveWebMentions(brand.id, allMentions);
       } catch (dbErr) {
         console.error("DB save error (non-blocking):", dbErr);
       }
-      return NextResponse.json(results);
+      return NextResponse.json(serpData);
     }
 
     return NextResponse.json(

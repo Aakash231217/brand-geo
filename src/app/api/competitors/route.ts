@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { analyzeCompetitors } from "@/lib/openrouter";
+import { getCompetitorRankings } from "@/lib/bright-data";
 import { getOrCreateBrand, saveCompetitorAnalysis } from "@/lib/db";
 import { requireAuth } from "@/lib/auth";
 
@@ -30,10 +31,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const analysis = await analyzeCompetitors(brandName, competitors, keywords);
+    // Step 1: Get real SERP rankings for all keywords
+    const realRankings = await getCompetitorRankings(brandName, competitors, keywords);
+
+    // Step 2: Pass real data to AI for grounded analysis
+    const analysis = await analyzeCompetitors(brandName, competitors, keywords, realRankings);
 
     try {
       const parsed = JSON.parse(analysis);
+      // Include real SERP rankings
+      parsed.realRankings = realRankings;
       await persistCompetitors(brandName, parsed);
       return NextResponse.json(parsed);
     } catch {
@@ -41,6 +48,7 @@ export async function POST(req: NextRequest) {
       if (match) {
         try {
           const parsed = JSON.parse(match[0]);
+          parsed.realRankings = realRankings;
           await persistCompetitors(brandName, parsed);
           return NextResponse.json(parsed);
         } catch {

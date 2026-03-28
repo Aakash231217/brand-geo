@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { analyzeBrandVisibility } from "@/lib/openrouter";
+import { searchBrandSERP } from "@/lib/bright-data";
 import { getOrCreateBrand, saveVisibilitySnapshot, saveAIQueries } from "@/lib/db";
 import { requireAuth } from "@/lib/auth";
 
@@ -18,7 +19,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Step 1: Get real SERP data
+    const serpData = await searchBrandSERP(brandName, keywords);
+
+    // Step 2: Query AI platforms for brand visibility
     const results = await analyzeBrandVisibility(brandName, keywords);
+
+    // Merge SERP data into results
+    const enrichedResults = {
+      ...results,
+      serpData: serpData.map((s) => ({
+        keyword: s.keyword,
+        brandRank: s.brandRank,
+        totalResults: s.totalResults,
+        topResults: s.results.slice(0, 5),
+        relatedQueries: s.relatedQueries,
+        peopleAlsoAsk: s.peopleAlsoAsk,
+        featuredSnippet: s.featuredSnippet,
+        aiOverview: s.aiOverview,
+      })),
+    };
 
     // Persist to DB
     try {
@@ -28,9 +48,8 @@ export async function POST(req: NextRequest) {
         platformScores: results.platformScores,
         keywordResults: results.keywordResults,
       });
-      // Save individual AI queries
-      const allQueries = results.keywordResults.flatMap((kr: { keyword: string; platforms: { platform: string; model: string; query: string; response: string; mentionsBrand: boolean; sentiment: string; citesSource: boolean }[] }) =>
-        kr.platforms.map((p: { platform: string; model: string; query: string; response: string; mentionsBrand: boolean; sentiment: string; citesSource: boolean }) => ({
+      const allQueries = results.keywordResults.flatMap((kr) =>
+        kr.platforms.map((p) => ({
           query: kr.keyword,
           platform: p.platform,
           model: p.model,
@@ -45,7 +64,7 @@ export async function POST(req: NextRequest) {
       console.error("DB save error (non-blocking):", dbErr);
     }
 
-    return NextResponse.json(results);
+    return NextResponse.json(enrichedResults);
   } catch (error) {
     console.error("Brand monitor error:", error);
     return NextResponse.json(

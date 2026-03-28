@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateContentIdeas } from "@/lib/openrouter";
+import { getTrendingQueries } from "@/lib/bright-data";
 import { getOrCreateBrand, saveContentIdeas } from "@/lib/db";
 import { requireAuth } from "@/lib/auth";
 
@@ -33,7 +34,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const ideas = await generateContentIdeas(brandName, industry, keywords);
+    // Get real trending queries to inform content ideas
+    const trending = await getTrendingQueries(brandName, industry);
+
+    const ideas = await generateContentIdeas(brandName, industry, keywords, trending.relatedQueries, trending.peopleAlsoAsk);
 
     try {
       const parsed = JSON.parse(ideas);

@@ -245,38 +245,128 @@ REAL PAGE DATA FROM SCRAPING:
 }
 
 /**
- * Competitor analysis grounded with real SERP rankings.
+ * Test AI platform visibility for multiple brands (your brand + competitors).
+ * Queries 3 key AI platforms with a comparison prompt to see who gets mentioned.
+ */
+export async function getCompetitorAIVisibility(
+  brandName: string,
+  competitors: string[],
+  keywords: string[]
+): Promise<{
+  brand: string;
+  platforms: { platform: string; mentioned: boolean; sentiment: string; position: string; sources: string[] }[];
+}[]> {
+  const allBrands = [brandName, ...competitors];
+  const testQuery = keywords.length > 0
+    ? `What are the best options for ${keywords[0]}? Compare ${allBrands.join(", ")}.`
+    : `Compare ${allBrands.join(" vs ")}. Which is better and why?`;
+
+  // Query 3 platforms for speed (ChatGPT, Gemini, Perplexity are most important)
+  const testPlatforms = ["chatgpt", "gemini", "perplexity"];
+  const platformResults = await Promise.allSettled(
+    testPlatforms.map((p) => queryAIPlatform(p, testQuery, brandName))
+  );
+
+  const responses = platformResults
+    .filter((r): r is PromiseFulfilledResult<AIQueryResult> => r.status === "fulfilled")
+    .map((r) => r.value);
+
+  return allBrands.map((brand) => {
+    const brandLower = brand.toLowerCase();
+    return {
+      brand,
+      platforms: responses.map((r) => {
+        const mentioned = r.response.toLowerCase().includes(brandLower);
+        const sentiment = mentioned ? detectSentiment(r.response, brand) : "neutral";
+
+        // Determine position: is the brand mentioned first, early, or late?
+        const idx = r.response.toLowerCase().indexOf(brandLower);
+        let position = "not mentioned";
+        if (mentioned) {
+          const textBefore = r.response.slice(0, idx);
+          const mentionNumber = allBrands.filter(
+            (b) => textBefore.toLowerCase().includes(b.toLowerCase())
+          ).length;
+          position = mentionNumber === 0 ? "first mentioned" : mentionNumber < 3 ? "mentioned early" : "mentioned late";
+        }
+
+        return {
+          platform: r.platform,
+          mentioned,
+          sentiment,
+          position,
+          sources: mentioned ? extractSources(r.response) : [],
+        };
+      }),
+    };
+  });
+}
+
+/**
+ * Competitor analysis grounded with real SERP rankings + AI visibility data.
  */
 export async function analyzeCompetitors(
   brandName: string,
   competitors: string[],
   keywords: string[],
-  realRankings?: { keyword: string; rankings: { name: string; rank: number | null; url: string; snippet: string }[] }[]
+  realRankings?: { keyword: string; rankings: { name: string; rank: number | null; url: string; snippet: string; topResult?: string }[]; topResults?: { title: string; url: string; description: string; rank: number }[]; relatedQueries?: string[]; peopleAlsoAsk?: string[] }[],
+  aiVisibility?: { brand: string; platforms: { platform: string; mentioned: boolean; sentiment: string; position: string }[] }[]
 ): Promise<string> {
   const rankingContext = realRankings?.length
     ? `
-REAL SERP RANKING DATA:
+REAL GOOGLE SERP RANKING DATA:
 ${realRankings
   .map(
     (kr) =>
-      `Keyword "${kr.keyword}":\n${kr.rankings
-        .map((r) => `  - ${r.name}: ${r.rank ? `Rank #${r.rank}` : "Not found in top results"} ${r.url ? `(${r.url})` : ""}`)
-        .join("\n")}`
+      `Keyword "${kr.keyword}":
+  Top 5 results: ${(kr.topResults || []).slice(0, 5).map((r, i) => `#${i + 1} ${r.title} (${r.url})`).join("; ")}
+  Brand positions:
+${kr.rankings
+  .map((r) => `    - ${r.name}: ${r.rank ? `Rank #${r.rank}` : "NOT in top results"} ${r.url ? `→ ${r.url}` : ""} ${r.snippet ? `"${r.snippet.slice(0, 100)}"` : ""}`)
+  .join("\n")}
+  Related queries: ${(kr.relatedQueries || []).slice(0, 5).join(", ") || "none"}
+  People Also Ask: ${(kr.peopleAlsoAsk || []).slice(0, 3).join("; ") || "none"}`
   )
   .join("\n\n")}
+`
+    : "";
+
+  const aiContext = aiVisibility?.length
+    ? `
+AI PLATFORM VISIBILITY (real test — we asked AI platforms to compare these brands):
+${aiVisibility
+  .map(
+    (v) =>
+      `${v.brand}:
+${v.platforms.map((p) => `    - ${p.platform}: ${p.mentioned ? `✓ Mentioned (${p.position}, ${p.sentiment})` : "✗ NOT mentioned"}`).join("\n")}`
+  )
+  .join("\n")}
 `
     : "";
 
   return queryModel(AI_MODELS.chatgpt.id, [
     {
       role: "system",
-      content: `You are an AI competitive intelligence analyst. Compare brand visibility across AI platforms and search engines. Use any REAL ranking data provided to ground your analysis — do not make up rankings. Respond in JSON with: competitors (array of {name, overallScore: 0-100, scores: {chatgpt: 0-100, gemini: 0-100, perplexity: 0-100, claude: 0-100}, totalCitations: number, trend: "up"|"down"|"stable", strengths: string[], weaknesses: string[]}), keywordBattles (array of {keyword, positions: [{brand, position: number|null}]}).`,
+      content: `You are an AI competitive intelligence analyst. You have REAL data from Google SERP rankings and AI platform tests. Base your analysis STRICTLY on this data — do not guess or fabricate scores.
+
+Scoring rules:
+- SERP Score (0-100): Based on actual Google rank positions. Rank #1 = 100, #2 = 90, #3 = 80, #5 = 60, #10 = 30, not found = 0. Average across keywords.
+- AI Visibility Score (0-100): Based on actual AI platform mention test. Mentioned on all 3 = 100, 2/3 = 67, 1/3 = 33, 0/3 = 0. Boost +10 for "first mentioned", +5 for positive sentiment.
+- Overall Score: 40% SERP + 40% AI Visibility + 20% quality signals (sentiment, sources cited).
+
+Include the OWNER brand (${brandName}) in the competitors array with isOwn: true.
+
+Respond in JSON: {
+  competitors: [{name, isOwn: boolean, overallScore: 0-100, serpScore: 0-100, aiScore: 0-100, scores: {chatgpt: 0-100, gemini: 0-100, perplexity: 0-100}, totalCitations: number, trend: "up"|"down"|"stable", change: string, topKeyword: string, strengths: string[], weaknesses: string[]}],
+  keywordBattles: [{keyword, positions: [{brand, position: number|null, url: string}], winner: string}],
+  insights: [{type: "opportunity"|"threat"|"strength", title: string, description: string}]
+}`,
     },
     {
       role: "user",
-      content: `Brand: ${brandName}\nCompetitors: ${competitors.join(", ")}\nKeywords: ${keywords.join(", ")}\n\n${rankingContext}\n\nAnalyze the competitive AI visibility landscape. Use the real ranking data to inform scores. If a brand doesn't appear in SERP results, their score should reflect that.`,
+      content: `Brand: ${brandName}\nCompetitors: ${competitors.join(", ")}\nKeywords: ${keywords.join(", ")}\n\n${rankingContext}\n${aiContext}\n\nAnalyze the competitive landscape using ONLY the real data provided. Be specific about which brands rank where and what AI platforms say.`,
     },
-  ], 3000, 0.3);
+  ], 4000, 0.2);
 }
 
 /**

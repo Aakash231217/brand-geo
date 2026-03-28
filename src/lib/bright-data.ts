@@ -372,6 +372,10 @@ export async function scrapeUrl(url: string): Promise<{
 
 /**
  * Get real competitor SERP rankings for keywords.
+ * Does TWO types of searches:
+ * 1. Bare keyword search — who ranks for the keyword itself
+ * 2. "keyword + brand" search — who ranks when searched with brand name
+ * This gives a much more accurate competitive picture.
  */
 export async function getCompetitorRankings(
   brandName: string,
@@ -379,48 +383,85 @@ export async function getCompetitorRankings(
   keywords: string[]
 ): Promise<{
   keyword: string;
-  rankings: { name: string; rank: number | null; url: string; snippet: string }[];
+  rankings: { name: string; rank: number | null; url: string; snippet: string; topResult?: string }[];
+  topResults: SERPResult[];
+  relatedQueries: string[];
+  peopleAlsoAsk: string[];
 }[]> {
+  const allBrands = [brandName, ...competitors];
+  const trimmedKeywords = keywords.slice(0, 5);
   const results: {
     keyword: string;
-    rankings: { name: string; rank: number | null; url: string; snippet: string }[];
+    rankings: { name: string; rank: number | null; url: string; snippet: string; topResult?: string }[];
+    topResults: SERPResult[];
+    relatedQueries: string[];
+    peopleAlsoAsk: string[];
   }[] = [];
 
-  const input = keywords.slice(0, 5).map((kw) => ({
-    url: "https://www.google.com/",
-    keyword: kw,
-    language: "",
-    uule: "",
-    brd_mobile: "",
-    tbs: "",
-    tbm: "",
-    nfpr: "",
-    index: "",
-  }));
+  // Build SERP queries: each keyword + each brand-keyword combo
+  const input: Record<string, string>[] = [];
+  const queryMap: { type: "bare" | "branded"; keyword: string; brand?: string; index: number }[] = [];
+
+  // Bare keyword searches (who ranks for the keyword itself)
+  for (const kw of trimmedKeywords) {
+    queryMap.push({ type: "bare", keyword: kw, index: input.length });
+    input.push({
+      url: "https://www.google.com/",
+      keyword: kw,
+      language: "", uule: "", brd_mobile: "", tbs: "", tbm: "", nfpr: "", index: "",
+    });
+  }
+
+  // Brand-specific searches (what shows up when you search "brand + keyword")
+  for (const brand of allBrands) {
+    for (const kw of trimmedKeywords.slice(0, 3)) {
+      queryMap.push({ type: "branded", keyword: kw, brand, index: input.length });
+      input.push({
+        url: "https://www.google.com/",
+        keyword: `${brand} ${kw}`,
+        language: "", uule: "", brd_mobile: "", tbs: "", tbm: "", nfpr: "", index: "",
+      });
+    }
+  }
+
+  // Also do "brand vs" searches for head-to-head comparison data
+  for (const comp of competitors.slice(0, 3)) {
+    queryMap.push({ type: "branded", keyword: "vs", brand: brandName, index: input.length });
+    input.push({
+      url: "https://www.google.com/",
+      keyword: `${brandName} vs ${comp}`,
+      language: "", uule: "", brd_mobile: "", tbs: "", tbm: "", nfpr: "", index: "",
+    });
+  }
 
   try {
     const serpResponses = await serpScrape(input);
 
-    for (let i = 0; i < serpResponses.length; i++) {
-      const resp = serpResponses[i];
-      const searchResults = extractResults(resp);
-      const rankings: { name: string; rank: number | null; url: string; snippet: string }[] = [];
+    // Process bare keyword results
+    for (const qm of queryMap.filter((q) => q.type === "bare")) {
+      const resp = serpResponses[qm.index];
+      if (!resp) continue;
 
-      for (const name of [brandName, ...competitors]) {
-        const nameLower = name.toLowerCase();
+      const searchResults = extractResults(resp);
+      const rankings: { name: string; rank: number | null; url: string; snippet: string; topResult?: string }[] = [];
+
+      for (const brand of allBrands) {
+        const brandLower = brand.toLowerCase();
         let found = false;
 
         for (let j = 0; j < searchResults.length; j++) {
           const r = searchResults[j];
           if (
-            r.title?.toLowerCase().includes(nameLower) ||
-            r.url?.toLowerCase().includes(nameLower)
+            r.title?.toLowerCase().includes(brandLower) ||
+            r.url?.toLowerCase().includes(brandLower) ||
+            r.description?.toLowerCase().includes(brandLower)
           ) {
             rankings.push({
-              name,
+              name: brand,
               rank: r.rank || j + 1,
               url: r.url || "",
               snippet: r.description || "",
+              topResult: r.title || "",
             });
             found = true;
             break;
@@ -428,14 +469,48 @@ export async function getCompetitorRankings(
         }
 
         if (!found) {
-          rankings.push({ name, rank: null, url: "", snippet: "" });
+          // Check branded search results for this brand+keyword
+          const brandedQuery = queryMap.find((q) => q.type === "branded" && q.brand === brand && q.keyword === qm.keyword);
+          if (brandedQuery) {
+            const brandedResp = serpResponses[brandedQuery.index];
+            if (brandedResp) {
+              const brandedResults = extractResults(brandedResp);
+              const first = brandedResults[0];
+              rankings.push({
+                name: brand,
+                rank: null,
+                url: first?.url || "",
+                snippet: first?.description || "",
+                topResult: first?.title || "",
+              });
+              found = true;
+            }
+          }
+          if (!found) {
+            rankings.push({ name: brand, rank: null, url: "", snippet: "" });
+          }
         }
       }
 
-      results.push({ keyword: keywords[i] || "", rankings });
+      results.push({
+        keyword: qm.keyword,
+        rankings,
+        topResults: searchResults.slice(0, 10),
+        relatedQueries: normalizeRelatedQueries(resp.related_queries),
+        peopleAlsoAsk: (resp.people_also_ask || []).map((p) => p.question).filter(Boolean),
+      });
     }
   } catch (error) {
     console.error("getCompetitorRankings error:", error);
+    for (const kw of trimmedKeywords) {
+      results.push({
+        keyword: kw,
+        rankings: allBrands.map((name) => ({ name, rank: null, url: "", snippet: "" })),
+        topResults: [],
+        relatedQueries: [],
+        peopleAlsoAsk: [],
+      });
+    }
   }
 
   return results;

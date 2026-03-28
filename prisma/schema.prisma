@@ -1,0 +1,158 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String   @default("")
+  passwordHash String
+  role         Role     @default(VIEWER)
+  avatar       String   @default("")
+  brandId      String?
+  brand        Brand?   @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  sessions     Session[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([token])
+  @@index([userId])
+}
+
+model Brand {
+  id          String   @id @default(cuid())
+  name        String
+  url         String   @default("")
+  description String   @default("")
+  industry    String   @default("SaaS / Software")
+  keywords    String[] @default([])
+  competitors String[] @default([])
+  platforms   String[] @default(["chatgpt", "gemini", "perplexity", "claude", "copilot", "llama"])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users               User[]
+  aiQueries           AIQuery[]
+  visibilitySnapshots VisibilitySnapshot[]
+  seoAudits           SEOAudit[]
+  competitorAnalyses  CompetitorAnalysis[]
+  contentIdeas        ContentIdea[]
+  geoAnalyses         GEOAnalysis[]
+  webMentions         WebMention[]
+}
+
+model AIQuery {
+  id            String   @id @default(cuid())
+  brandId       String
+  brand         Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  query         String
+  platform      String
+  model         String
+  response      String   @db.Text
+  mentionsBrand Boolean  @default(false)
+  sentiment     String   @default("neutral")
+  citesSource   Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([brandId, createdAt])
+}
+
+model VisibilitySnapshot {
+  id             String   @id @default(cuid())
+  brandId        String
+  brand          Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  overallScore   Int      @default(0)
+  platformScores Json     @default("{}")
+  keywordResults Json     @default("[]")
+  createdAt      DateTime @default(now())
+
+  @@index([brandId, createdAt])
+}
+
+model SEOAudit {
+  id              String   @id @default(cuid())
+  brandId         String
+  brand           Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  url             String
+  overallScore    Int      @default(0)
+  categories      Json     @default("[]")
+  recommendations Json     @default("[]")
+  createdAt       DateTime @default(now())
+
+  @@index([brandId, createdAt])
+}
+
+model CompetitorAnalysis {
+  id              String   @id @default(cuid())
+  brandId         String
+  brand           Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  competitors     Json     @default("[]")
+  keywordBattles  Json     @default("[]")
+  createdAt       DateTime @default(now())
+
+  @@index([brandId, createdAt])
+}
+
+model ContentIdea {
+  id              String   @id @default(cuid())
+  brandId         String
+  brand           Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  title           String
+  type            String
+  targetKeywords  String[] @default([])
+  estimatedImpact String   @default("medium")
+  reason          String   @default("")
+  status          String   @default("draft")
+  createdAt       DateTime @default(now())
+
+  @@index([brandId, createdAt])
+}
+
+model GEOAnalysis {
+  id                    String   @id @default(cuid())
+  brandId               String
+  brand                 Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  url                   String   @default("")
+  strategies            Json     @default("[]")
+  contentOptimizations  Json     @default("[]")
+  createdAt             DateTime @default(now())
+
+  @@index([brandId, createdAt])
+}
+
+model WebMention {
+  id        String   @id @default(cuid())
+  brandId   String
+  brand     Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  query     String
+  url       String
+  title     String   @default("")
+  snippet   String   @default("") @db.Text
+  platform  String   @default("")
+  date      String   @default("")
+  createdAt DateTime @default(now())
+
+  @@unique([brandId, url, query])
+  @@index([brandId, createdAt])
+}

@@ -4,6 +4,7 @@ import "./globals.css";
 import { AuthProvider } from "@/lib/auth-context";
 import { AuthGuard } from "@/components/auth-guard";
 import { AppShell } from "@/components/app-shell";
+import { ChatbotWidget } from "@/components/chatbot-widget";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -33,6 +34,7 @@ export default function RootLayout({
             <AppShell>{children}</AppShell>
           </AuthGuard>
         </AuthProvider>
+        <ChatbotWidget />
       </body>
     </html>
   );

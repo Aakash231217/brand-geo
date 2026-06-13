@@ -34,6 +34,10 @@ export function ChatbotWidget() {
     iframe.id = "coronna-chat-frame";
     iframe.src = BOT_SRC;
     iframe.classList.add("chat-frame");
+    // Delegate device permissions to the cross-origin bot iframe.
+    // Without this, the browser blocks microphone access inside the iframe,
+    // so the bot's speech recognition (Web Speech API / getUserMedia) never works.
+    iframe.allow = `microphone ${BOT_ORIGIN}; camera ${BOT_ORIGIN}; autoplay`;
     document.body.appendChild(iframe);
 
     // --- behavior tracker: auto-open bot when user looks stuck ---

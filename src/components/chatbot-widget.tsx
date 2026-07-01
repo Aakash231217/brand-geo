@@ -4,11 +4,17 @@ import { useEffect } from "react";
 
 const BOT_ORIGIN = "https://coronna-bot.vercel.app";
 const BOT_SRC = `${BOT_ORIGIN}/chatbot`;
-const BOT_TARGET = `${BOT_ORIGIN}/`;
+const BOT_TARGET = BOT_ORIGIN;
 const BOT_TOKEN = "c0c6c4a3-9773-4372-860d-1a3c49b93a78";
 
 const IDLE_MS = 25_000;
 const IDLE_CHECK_MS = 5_000;
+
+type BotDimensions = {
+  width?: number | string;
+  height?: number | string;
+  position?: "left" | "right" | "full";
+};
 
 export function ChatbotWidget() {
   useEffect(() => {
@@ -23,6 +29,7 @@ export function ChatbotWidget() {
         position: fixed;
         bottom: 50px;
         right: 50px;
+        left: auto;
         border: none;
         z-index: 9999;
       }
@@ -34,10 +41,8 @@ export function ChatbotWidget() {
     iframe.id = "coronna-chat-frame";
     iframe.src = BOT_SRC;
     iframe.classList.add("chat-frame");
-    // Delegate device permissions to the cross-origin bot iframe.
-    // Without this, the browser blocks microphone access inside the iframe,
-    // so the bot's speech recognition (Web Speech API / getUserMedia) never works.
-    iframe.allow = `microphone ${BOT_ORIGIN}; camera ${BOT_ORIGIN}; autoplay`;
+    iframe.allow = "microphone; autoplay; clipboard-write";
+    iframe.setAttribute("allowtransparency", "true");
     document.body.appendChild(iframe);
 
     // --- behavior tracker: auto-open bot when user looks stuck ---
@@ -91,20 +96,61 @@ export function ChatbotWidget() {
     };
     document.addEventListener("mouseleave", handleMouseLeave);
 
+    const applyLayout = (dimensions: BotDimensions) => {
+      if (dimensions.position === "full") {
+        iframe.style.top = "0";
+        iframe.style.left = "0";
+        iframe.style.right = "auto";
+        iframe.style.bottom = "auto";
+        iframe.style.width = "100%";
+        iframe.style.height = "100%";
+        iframe.width = String(window.innerWidth);
+        iframe.height = String(window.innerHeight);
+        return;
+      }
+
+      iframe.style.top = "auto";
+      iframe.style.bottom = "50px";
+
+      if (dimensions.width) {
+        iframe.style.width = `${dimensions.width}px`;
+        iframe.width = String(dimensions.width);
+      }
+
+      if (dimensions.height) {
+        iframe.style.height = `${dimensions.height}px`;
+        iframe.height = String(dimensions.height);
+      }
+
+      if (dimensions.position === "left") {
+        iframe.style.left = "50px";
+        iframe.style.right = "auto";
+      } else {
+        iframe.style.right = "50px";
+        iframe.style.left = "auto";
+      }
+    };
+
+    let lastDimensions: BotDimensions | null = null;
+
     // --- bot -> host messaging (resize + handshake) ---
     const handleMessage = (e: MessageEvent) => {
       if (e.origin !== BOT_ORIGIN) return;
       try {
-        const dimensions =
+        lastDimensions =
           typeof e.data === "string" ? JSON.parse(e.data) : e.data;
-        if (dimensions?.width) iframe.width = String(dimensions.width);
-        if (dimensions?.height) iframe.height = String(dimensions.height);
+        if (lastDimensions) applyLayout(lastDimensions);
         iframe.contentWindow?.postMessage(BOT_TOKEN, BOT_TARGET);
       } catch {
         // ignore non-JSON messages from other senders
       }
     };
     window.addEventListener("message", handleMessage);
+
+    const handleResize = () => {
+      if (lastDimensions?.position === "full") applyLayout(lastDimensions);
+    };
+    window.addEventListener("resize", handleResize);
 
     // --- cleanup ---
     return () => {
@@ -114,6 +160,7 @@ export function ChatbotWidget() {
       );
       document.removeEventListener("mouseleave", handleMouseLeave);
       window.removeEventListener("message", handleMessage);
+      window.removeEventListener("resize", handleResize);
       iframe.remove();
       style.remove();
     };

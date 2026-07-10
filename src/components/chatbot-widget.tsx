@@ -5,7 +5,7 @@ import { useEffect } from "react";
 const BOT_ORIGIN = "https://coronna-bot.vercel.app";
 const BOT_SRC = `${BOT_ORIGIN}/chatbot`;
 const BOT_TARGET = BOT_ORIGIN;
-const BOT_TOKEN = "c0c6c4a3-9773-4372-860d-1a3c49b93a78";
+const BOT_TOKEN = "dc70fa5f-9774-47c3-b8c2-6366be8d6f28";
 
 const IDLE_MS = 25_000;
 const IDLE_CHECK_MS = 5_000;
